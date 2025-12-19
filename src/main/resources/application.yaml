@@ -1,0 +1,9 @@
+ktor:
+  application:
+    modules:
+      - ai.jetbrains.ApplicationKt.module
+  deployment:
+    port: 8080
+  agentcore:
+    memoryId: memory_some-id
+    memoryStrategyId: semantic_builtin_other-id
