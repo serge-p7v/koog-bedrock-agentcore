@@ -10,11 +10,9 @@ import aws.sdk.kotlin.services.bedrockagentcore.model.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 class AgentcoreMessageConverterTest {
 
@@ -133,7 +131,6 @@ class AgentcoreMessageConverterTest {
         val message = AgentcoreMessageConverter.conversationalToMessage(conversational, eventId = "evt-123")
 
         assertNotNull(message)
-        assertTrue(AgentcoreMessageConverter.hasEventId(message))
         assertEquals("evt-123", AgentcoreMessageConverter.getEventId(message))
     }
 
@@ -146,14 +143,12 @@ class AgentcoreMessageConverterTest {
         val message = AgentcoreMessageConverter.conversationalToMessage(conversational, eventId = null)
 
         assertNotNull(message)
-        assertFalse(AgentcoreMessageConverter.hasEventId(message))
         assertNull(AgentcoreMessageConverter.getEventId(message))
     }
 
     @Test
     fun testHasEventIdOnPlainMessage() {
         val message = Message.User("Hello", RequestMetaInfo.Empty)
-        assertFalse(AgentcoreMessageConverter.hasEventId(message))
         assertNull(AgentcoreMessageConverter.getEventId(message))
     }
 

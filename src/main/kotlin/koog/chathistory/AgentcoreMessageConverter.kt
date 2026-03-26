@@ -151,66 +151,10 @@ public object AgentcoreMessageConverter {
     }
 
     /**
-     * Checks whether a [Message] is a conversational type supported by this provider
-     * (i.e. [Message.User] or [Message.Assistant]).
-     */
-    internal fun isConversational(message: Message): Boolean {
-        return message is Message.User || message is Message.Assistant
-    }
-
-    /**
-     * Checks whether a [Message] has already been persisted to AgentCore
-     * by looking for [EVENT_ID_METADATA_KEY] in its metadata.
-     */
-    internal fun hasEventId(message: Message): Boolean {
-        val metadata = message.metaInfo.metadata ?: return false
-        return metadata.containsKey(EVENT_ID_METADATA_KEY)
-    }
-
-    /**
      * Returns the eventId stored in a message's metadata, or `null` if absent.
      */
     internal fun getEventId(message: Message): String? {
         val metadata = message.metaInfo.metadata ?: return null
         return (metadata[EVENT_ID_METADATA_KEY] as? JsonPrimitive)?.content
-    }
-
-    /**
-     * Returns a copy of [message] with the given [eventId] merged into its metadata.
-     * Existing metadata fields are preserved; only [EVENT_ID_METADATA_KEY] is added/overwritten.
-     *
-     * For [Message.Assistant], preserves finishReason, token counts, additionalInfo, and existing metadata.
-     * For [Message.User], preserves existing metadata.
-     *
-     * @throws IllegalStateException if the message is not [Message.User] or [Message.Assistant].
-     */
-    internal fun withEventId(message: Message, eventId: String): Message {
-        val mergedMetadata = mergeMetadata(message.metaInfo.metadata, eventId)
-
-        return when (message) {
-            is Message.User -> {
-                val oldMeta = message.metaInfo
-                message.copy(metaInfo = oldMeta.copy(metadata = mergedMetadata))
-            }
-
-            is Message.Assistant -> {
-                val oldMeta = message.metaInfo
-                message.copy(metaInfo = oldMeta.copy(metadata = mergedMetadata))
-            }
-
-            else -> throw IllegalStateException(
-                "Cannot add eventId to non-conversational message: ${message::class.simpleName}"
-            )
-        }
-    }
-
-    /**
-     * Merges [eventId] into [existing] metadata, preserving all existing fields.
-     * If [existing] is null, creates a new [JsonObject] with only the eventId entry.
-     */
-    internal fun mergeMetadata(existing: JsonObject?, eventId: String): JsonObject {
-        val entries = existing?.toMutableMap() ?: mutableMapOf()
-        entries[EVENT_ID_METADATA_KEY] = JsonPrimitive(eventId)
-        return JsonObject(entries)
     }
 }

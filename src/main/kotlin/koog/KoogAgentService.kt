@@ -86,7 +86,7 @@ object KoogAgentService {
         }
 
         return try {
-            agent.run(userPrompt, "actorId:sessionId") //fixme: set desired actorId and sessionId
+            agent.run(userPrompt, "myActorId:mySessionId") //FIXME: set desired actorId and sessionId
         } catch (e: Exception) {
             logger.error("Error trying to run agent: ${e.message}", e)
             throw e
