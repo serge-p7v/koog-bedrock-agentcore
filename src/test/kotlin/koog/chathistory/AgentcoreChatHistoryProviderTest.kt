@@ -65,17 +65,11 @@ class AgentcoreChatHistoryProviderTest {
         }
     }
 
-    // --- store saves only new conversational messages (delta) ---
+    // --- store: saves new messages (no eventId in metadata) ---
 
     @Test
-    fun testStoreSavesAllConversationalMessages() = runTest {
+    fun testStoreSavesAllNewMessages() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // No existing events
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = emptyList()
-            nextToken = null
-        }
 
         val requestSlot = mutableListOf<CreateEventRequest>()
         coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
@@ -101,13 +95,9 @@ class AgentcoreChatHistoryProviderTest {
     }
 
     @Test
-    fun testStoreCallsListEventsToFetchExisting() = runTest {
+    fun testStoreDoesNotCallListEvents() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = emptyList()
-            nextToken = null
-        }
         coEvery { client.createEvent(any<CreateEventRequest>()) } returns CreateEventResponse {
             event = makeEvent("evt-1", emptyList())
         }
@@ -119,7 +109,8 @@ class AgentcoreChatHistoryProviderTest {
             )
         )
 
-        coVerify(atLeast = 1) { client.listEvents(any<ListEventsRequest>()) }
+        // store() should NOT fetch existing events — delta is based on eventId metadata
+        coVerify(exactly = 0) { client.listEvents(any<ListEventsRequest>()) }
         coVerify(exactly = 1) { client.createEvent(any<CreateEventRequest>()) }
     }
 
@@ -132,16 +123,11 @@ class AgentcoreChatHistoryProviderTest {
         coVerify(exactly = 0) { client.createEvent(any<CreateEventRequest>()) }
     }
 
-    // --- store ignores non-conversational messages ---
+    // --- store: ignores non-conversational messages ---
 
     @Test
     fun testStoreIgnoresNonConversationalMessages() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = emptyList()
-            nextToken = null
-        }
 
         val requestSlot = mutableListOf<CreateEventRequest>()
         coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
@@ -166,11 +152,6 @@ class AgentcoreChatHistoryProviderTest {
     fun testStoreOnlyNonConversationalMessagesDoesNothing() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = emptyList()
-            nextToken = null
-        }
-
         val messages = listOf(
             Message.System("system prompt", RequestMetaInfo.Empty),
             Message.Tool.Call(id = "1", tool = "t", content = "{}", metaInfo = ResponseMetaInfo.Empty)
@@ -194,95 +175,84 @@ class AgentcoreChatHistoryProviderTest {
         }
     }
 
-    @Test
-    fun testStoreOnlyStoresNewMessages() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
+    // --- store: eventId-based delta detection ---
 
-        // Existing event with one message
-        val existingEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "Hello")
+    @OptIn(ExperimentalTime::class)
+    private fun userMsgWithEventId(text: String, eventId: String): Message.User {
+        return Message.User(
+            text,
+            RequestMetaInfo(
+                timestamp = kotlin.time.Clock.System.now(),
+                metadata = JsonObject(mapOf(EVENT_ID_METADATA_KEY to JsonPrimitive(eventId)))
             )
         )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(existingEvent)
-            nextToken = null
-        }
+    }
+
+    @OptIn(ExperimentalTime::class)
+    private fun assistantMsgWithEventId(text: String, eventId: String): Message.Assistant {
+        return Message.Assistant(
+            text,
+            ResponseMetaInfo(
+                timestamp = kotlin.time.Clock.System.now(),
+                metadata = JsonObject(mapOf(EVENT_ID_METADATA_KEY to JsonPrimitive(eventId)))
+            )
+        )
+    }
+
+    @Test
+    fun testStoreSkipsMessagesWithEventId() = runTest {
+        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
         val requestSlot = mutableListOf<CreateEventRequest>()
         coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
             event = makeEvent("evt-2", emptyList())
         }
 
-        // Store 2 messages where first already exists
+        // Messages with eventId (loaded from AgentCore) + new message without eventId
         provider.store(
             "actor:session", listOf(
-                Message.User("Hello", RequestMetaInfo.Empty),
-                Message.Assistant("Hi!", ResponseMetaInfo.Empty)
+                userMsgWithEventId("Hello", "evt-1"),
+                assistantMsgWithEventId("Hi!", "evt-1"),
+                Message.User("Follow-up question", RequestMetaInfo.Empty)
             )
         )
 
         assertEquals(1, requestSlot.size)
         val savedPayloads = requestSlot[0].payload!!
         assertEquals(1, savedPayloads.size)
-        val first = savedPayloads[0] as PayloadType.Conversational
-        assertEquals(Role.Assistant, first.value.role)
-        assertEquals("Hi!", (first.value.content as Content.Text).value)
+        val saved = savedPayloads[0] as PayloadType.Conversational
+        assertEquals("Follow-up question", (saved.value.content as Content.Text).value)
     }
 
     @Test
-    fun testStoreSkipsWhenAllMessagesAlreadyExist() = runTest {
+    fun testStoreSkipsWhenAllMessagesHaveEventId() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
-        val existingEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "Hello"),
-                conversationalPayload(Role.Assistant, "Hi!")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(existingEvent)
-            nextToken = null
-        }
-
+        // All messages already persisted (have eventId)
         provider.store(
             "actor:session", listOf(
-                Message.User("Hello", RequestMetaInfo.Empty),
-                Message.Assistant("Hi!", ResponseMetaInfo.Empty)
+                userMsgWithEventId("Hello", "evt-1"),
+                assistantMsgWithEventId("Hi!", "evt-1")
             )
         )
 
         coVerify(exactly = 0) { client.createEvent(any<CreateEventRequest>()) }
     }
 
-    // --- store: delta detection with mixed message types ---
-
     @Test
     fun testStoreDeltaWithMixedSystemAndConversationalMessages() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // Existing: one User message already persisted
-        val existingEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "Hello")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(existingEvent)
-            nextToken = null
-        }
 
         val requestSlot = mutableListOf<CreateEventRequest>()
         coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
             event = makeEvent("evt-2", emptyList())
         }
 
-        // Incoming: system + existing User + new Assistant
-        // The system message should be filtered out, and only the new Assistant should be saved
+        // System message (filtered), persisted User (has eventId), new Assistant (no eventId)
         provider.store(
             "actor:session", listOf(
                 Message.System("system prompt", RequestMetaInfo.Empty),
-                Message.User("Hello", RequestMetaInfo.Empty),
+                userMsgWithEventId("Hello", "evt-1"),
                 Message.Assistant("Hi!", ResponseMetaInfo.Empty)
             )
         )
@@ -295,39 +265,92 @@ class AgentcoreChatHistoryProviderTest {
         assertEquals("Hi!", (first.value.content as Content.Text).value)
     }
 
-    // --- store: suffix-overlap with no overlap saves all incoming ---
-
     @Test
-    fun testStoreNoOverlapSavesAllIncoming() = runTest {
+    fun testStoreWindowedHistory_RemoteHas100_LocalHasLast20Plus1New() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
-        // Existing: "Hello" from User
-        val existingEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "Hello")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(existingEvent)
-            nextToken = null
+        val requestSlot = mutableListOf<CreateEventRequest>()
+        coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
+            event = makeEvent("evt-new", emptyList())
         }
+
+        // Local window: last 20 messages with eventId (loaded from AgentCore) + 1 new
+        val localWindow = (41..50).flatMap { i ->
+            val eventIdx = ((i - 1) * 2) / 10 + 1
+            listOf(
+                userMsgWithEventId("user-$i", "evt-$eventIdx"),
+                assistantMsgWithEventId("assistant-$i", "evt-$eventIdx")
+            )
+        } + listOf(Message.User("new-question", RequestMetaInfo.Empty))
+
+        provider.store("actor:session", localWindow)
+
+        assertEquals(1, requestSlot.size)
+        val savedPayloads = requestSlot[0].payload!!
+        assertEquals(1, savedPayloads.size)
+        val saved = savedPayloads[0] as PayloadType.Conversational
+        assertEquals("new-question", (saved.value.content as Content.Text).value)
+    }
+
+    @Test
+    fun testStoreMultipleNewMessagesAfterPersisted() = runTest {
+        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
         val requestSlot = mutableListOf<CreateEventRequest>()
         coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
             event = makeEvent("evt-2", emptyList())
         }
 
-        // Incoming: completely different messages — no overlap, all saved
         provider.store(
             "actor:session", listOf(
-                Message.User("Different greeting", RequestMetaInfo.Empty),
-                Message.Assistant("Hi!", ResponseMetaInfo.Empty)
+                userMsgWithEventId("Hello", "evt-1"),
+                assistantMsgWithEventId("Hi!", "evt-1"),
+                Message.User("Question 1", RequestMetaInfo.Empty),
+                Message.Assistant("Answer 1", ResponseMetaInfo.Empty),
+                Message.User("Question 2", RequestMetaInfo.Empty)
             )
         )
 
         assertEquals(1, requestSlot.size)
         val savedPayloads = requestSlot[0].payload!!
-        assertEquals(2, savedPayloads.size)
+        assertEquals(3, savedPayloads.size)
+        assertEquals(
+            "Question 1",
+            ((savedPayloads[0] as PayloadType.Conversational).value.content as Content.Text).value
+        )
+        assertEquals("Answer 1", ((savedPayloads[1] as PayloadType.Conversational).value.content as Content.Text).value)
+        assertEquals(
+            "Question 2",
+            ((savedPayloads[2] as PayloadType.Conversational).value.content as Content.Text).value
+        )
+    }
+
+    @Test
+    fun testStoreEventIdMessagesInterleavedWithNew() = runTest {
+        // eventId messages can appear in any order relative to new messages
+        // (e.g., if preprocessors reorder). Only eventId presence matters.
+        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
+
+        val requestSlot = mutableListOf<CreateEventRequest>()
+        coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
+            event = makeEvent("evt-2", emptyList())
+        }
+
+        provider.store(
+            "actor:session", listOf(
+                Message.User("new message", RequestMetaInfo.Empty),
+                assistantMsgWithEventId("persisted message", "evt-1")
+            )
+        )
+
+        // Only the new message (without eventId) should be saved
+        assertEquals(1, requestSlot.size)
+        val savedPayloads = requestSlot[0].payload!!
+        assertEquals(1, savedPayloads.size)
+        assertEquals(
+            "new message",
+            ((savedPayloads[0] as PayloadType.Conversational).value.content as Content.Text).value
+        )
     }
 
     // --- load: loadAllEvents=true (default) fetches all events ---
@@ -417,7 +440,7 @@ class AgentcoreChatHistoryProviderTest {
         assertEquals(expectedKotlinInstant, messages[0].metaInfo.timestamp)
     }
 
-    // --- load: loadAllEvents=true ---
+    // --- load: pagination and ordering ---
 
     @Test
     fun testLoadAllEventsReversesToChronological() = runTest {
@@ -549,10 +572,6 @@ class AgentcoreChatHistoryProviderTest {
     fun testStoreWrapsAwsSdkExceptions() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = emptyList()
-            nextToken = null
-        }
         coEvery { client.createEvent(any<CreateEventRequest>()) } throws
                 aws.smithy.kotlin.runtime.ServiceException("AWS error")
 
@@ -615,338 +634,70 @@ class AgentcoreChatHistoryProviderTest {
         assertEquals(2, messages.size)
     }
 
-    // --- Suffix-overlap tests ---
-
-    @OptIn(ExperimentalTime::class)
-    private fun userMsgWithEventId(text: String, eventId: String): Message.User {
-        return Message.User(
-            text,
-            RequestMetaInfo(
-                timestamp = kotlin.time.Clock.System.now(),
-                metadata = JsonObject(mapOf(EVENT_ID_METADATA_KEY to JsonPrimitive(eventId)))
-            )
-        )
-    }
-
-    @OptIn(ExperimentalTime::class)
-    private fun assistantMsgWithEventId(text: String, eventId: String): Message.Assistant {
-        return Message.Assistant(
-            text,
-            ResponseMetaInfo(
-                timestamp = kotlin.time.Clock.System.now(),
-                metadata = JsonObject(mapOf(EVENT_ID_METADATA_KEY to JsonPrimitive(eventId)))
-            )
-        )
-    }
+    // --- Round-trip: load → store only saves new messages ---
 
     @Test
-    fun testStoreWindowedHistory_RemoteHas100_LocalHasLast20Plus1New() = runTest {
+    fun testRoundTripLoadThenStoreOnlySavesNew() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
-        // Remote has 100 messages (50 user/assistant pairs)
-        val remotePayloads = (1..50).flatMap { i ->
-            listOf(
-                conversationalPayload(Role.User, "user-$i"),
-                conversationalPayload(Role.Assistant, "assistant-$i")
-            )
-        }
-        // Split into events of 10 payloads each
-        val remoteEvents = remotePayloads.chunked(10).mapIndexed { idx, chunk ->
-            makeEvent("evt-${idx + 1}", chunk)
-        }
-
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = remoteEvents.reversed() // AgentCore returns newest-first
-            nextToken = null
-        }
-
-        val requestSlot = mutableListOf<CreateEventRequest>()
-        coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
-            event = makeEvent("evt-new", emptyList())
-        }
-
-        // Local window: last 20 messages (user-41..user-50, assistant-41..assistant-50) + 1 new
-        // Remote events are chunked by 10 payloads: evt-1 has indices 0-9, evt-2 has 10-19, etc.
-        // user-41 is at flat index 80, assistant-50 is at flat index 99
-        // So indices 80-89 -> evt-9, indices 90-99 -> evt-10
-        val localWindow = (41..50).flatMap { i ->
-            // flat index of user-i is (i-1)*2, of assistant-i is (i-1)*2+1
-            val userEventIdx = ((i - 1) * 2) / 10 + 1
-            val assistantEventIdx = ((i - 1) * 2 + 1) / 10 + 1
-            listOf(
-                userMsgWithEventId("user-$i", "evt-$userEventIdx"),
-                assistantMsgWithEventId("assistant-$i", "evt-$assistantEventIdx")
-            )
-        } + listOf(Message.User("new-question", RequestMetaInfo.Empty))
-
-        provider.store("actor:session", localWindow)
-
-        assertEquals(1, requestSlot.size)
-        val savedPayloads = requestSlot[0].payload!!
-        assertEquals(1, savedPayloads.size)
-        val saved = savedPayloads[0] as PayloadType.Conversational
-        assertEquals("new-question", (saved.value.content as Content.Text).value)
-    }
-
-    @Test
-    fun testStoreRepeatedCallAfterSuccessfulSave_NothingSavedSecondTime() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // After first save, remote now has both messages
-        val remoteEvent = makeEvent(
+        // Simulate load: returns messages with eventId in metadata
+        val event = makeEvent(
             "evt-1", listOf(
                 conversationalPayload(Role.User, "Hello"),
                 conversationalPayload(Role.Assistant, "Hi!")
             )
         )
         coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(remoteEvent)
+            events = listOf(event)
             nextToken = null
         }
 
-        // Same immutable local list (without eventIds, simulating no mutation)
-        provider.store(
-            "actor:session", listOf(
-                Message.User("Hello", RequestMetaInfo.Empty),
-                Message.Assistant("Hi!", ResponseMetaInfo.Empty)
+        val loaded = provider.load("actor:session")
+        assertEquals(2, loaded.size)
+        // Loaded messages should have eventId
+        assertEquals("evt-1", AgentcoreMessageConverter.getEventId(loaded[0]))
+        assertEquals("evt-1", AgentcoreMessageConverter.getEventId(loaded[1]))
+
+        // Now store: loaded messages + one new message
+        val storeRequestSlot = mutableListOf<CreateEventRequest>()
+        coEvery { client.createEvent(capture(storeRequestSlot)) } returns CreateEventResponse {
+            this.event = makeEvent("evt-2", emptyList())
+        }
+
+        val allMessages = loaded + Message.User("New question", RequestMetaInfo.Empty)
+        provider.store("actor:session", allMessages)
+
+        // Only the new message should be saved
+        assertEquals(1, storeRequestSlot.size)
+        val savedPayloads = storeRequestSlot[0].payload!!
+        assertEquals(1, savedPayloads.size)
+        assertEquals(
+            "New question",
+            ((savedPayloads[0] as PayloadType.Conversational).value.content as Content.Text).value
+        )
+    }
+
+    @Test
+    fun testRoundTripLoadThenStoreNoNewMessages() = runTest {
+        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
+
+        // Simulate load
+        val event = makeEvent(
+            "evt-1", listOf(
+                conversationalPayload(Role.User, "Hello"),
+                conversationalPayload(Role.Assistant, "Hi!")
             )
         )
+        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
+            events = listOf(event)
+            nextToken = null
+        }
 
-        // Nothing should be saved — full overlap by content
+        val loaded = provider.load("actor:session")
+
+        // Store same messages back — nothing new to save
+        provider.store("actor:session", loaded)
+
         coVerify(exactly = 0) { client.createEvent(any<CreateEventRequest>()) }
     }
-
-    @Test
-    fun testStoreAllNewMessages_NoPersistedOverlap() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // Remote has old messages that don't overlap with local window at all
-        val remoteEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "old-msg-1"),
-                conversationalPayload(Role.Assistant, "old-msg-2")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(remoteEvent)
-            nextToken = null
-        }
-
-        val requestSlot = mutableListOf<CreateEventRequest>()
-        coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
-            event = makeEvent("evt-2", emptyList())
-        }
-
-        // Local window has only new unsaved messages (truncated away all persisted ones)
-        provider.store(
-            "actor:session", listOf(
-                Message.User("brand-new-1", RequestMetaInfo.Empty),
-                Message.Assistant("brand-new-2", ResponseMetaInfo.Empty)
-            )
-        )
-
-        assertEquals(1, requestSlot.size)
-        val savedPayloads = requestSlot[0].payload!!
-        assertEquals(2, savedPayloads.size)
-    }
-
-    @Test
-    fun testStorePersistedWithEventIdFollowedByNewMessages() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // Remote has 2 messages
-        val remoteEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "Hello"),
-                conversationalPayload(Role.Assistant, "Hi!")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(remoteEvent)
-            nextToken = null
-        }
-
-        val requestSlot = mutableListOf<CreateEventRequest>()
-        coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
-            event = makeEvent("evt-2", emptyList())
-        }
-
-        // Local: loaded messages with eventId + new messages without eventId
-        provider.store(
-            "actor:session", listOf(
-                userMsgWithEventId("Hello", "evt-1"),
-                assistantMsgWithEventId("Hi!", "evt-1"),
-                Message.User("Follow-up question", RequestMetaInfo.Empty)
-            )
-        )
-
-        assertEquals(1, requestSlot.size)
-        val savedPayloads = requestSlot[0].payload!!
-        assertEquals(1, savedPayloads.size)
-        val saved = savedPayloads[0] as PayloadType.Conversational
-        assertEquals("Follow-up question", (saved.value.content as Content.Text).value)
-    }
-
-    @Test
-    fun testStoreThrowsWhenEventIdAfterNonEventId() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // Message with eventId appears after one without — inconsistent ordering
-        assertFailsWith<AgentcoreMemoryException.StorageException> {
-            provider.store(
-                "actor:session", listOf(
-                    Message.User("new message", RequestMetaInfo.Empty),
-                    assistantMsgWithEventId("persisted message", "evt-1")
-                )
-            )
-        }
-
-        // Should fail before any API calls
-        coVerify(exactly = 0) { client.listEvents(any<ListEventsRequest>()) }
-        coVerify(exactly = 0) { client.createEvent(any<CreateEventRequest>()) }
-    }
-
-    @Test
-    fun testStoreDuplicateContentInHistory_MaxOverlapChosen() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // Remote has repeated pattern: "ping" / "pong" / "ping" / "pong"
-        val remoteEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "ping"),
-                conversationalPayload(Role.Assistant, "pong"),
-                conversationalPayload(Role.User, "ping"),
-                conversationalPayload(Role.Assistant, "pong")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(remoteEvent)
-            nextToken = null
-        }
-
-        val requestSlot = mutableListOf<CreateEventRequest>()
-        coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
-            event = makeEvent("evt-2", emptyList())
-        }
-
-        // Local window: last 2 of remote ("ping", "pong") + 1 new
-        // Maximum overlap should be 2 (matching the last "ping"/"pong" pair)
-        provider.store(
-            "actor:session", listOf(
-                Message.User("ping", RequestMetaInfo.Empty),
-                Message.Assistant("pong", ResponseMetaInfo.Empty),
-                Message.User("new-question", RequestMetaInfo.Empty)
-            )
-        )
-
-        assertEquals(1, requestSlot.size)
-        val savedPayloads = requestSlot[0].payload!!
-        assertEquals(1, savedPayloads.size)
-        val saved = savedPayloads[0] as PayloadType.Conversational
-        assertEquals("new-question", (saved.value.content as Content.Text).value)
-    }
-
-    // --- Issue fix: overlap==0 with eventId-bearing incoming throws ---
-
-    @Test
-    fun testStoreThrowsWhenZeroOverlapButIncomingHasEventId() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // Remote has messages that don't match incoming at all
-        val remoteEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "remote-only-msg"),
-                conversationalPayload(Role.Assistant, "remote-only-reply")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(remoteEvent)
-            nextToken = null
-        }
-
-        // Incoming has eventId-bearing messages that don't overlap with remote —
-        // this means local and remote have diverged
-        assertFailsWith<AgentcoreMemoryException.StorageException> {
-            provider.store(
-                "actor:session", listOf(
-                    userMsgWithEventId("completely-different", "evt-99"),
-                    Message.User("new msg", RequestMetaInfo.Empty)
-                )
-            )
-        }
-    }
-
-    @Test
-    fun testStoreZeroOverlapWithoutEventId_SavesAll() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // Remote has messages
-        val remoteEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "remote-only-msg")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(remoteEvent)
-            nextToken = null
-        }
-
-        val requestSlot = mutableListOf<CreateEventRequest>()
-        coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
-            event = makeEvent("evt-2", emptyList())
-        }
-
-        // Incoming has NO eventId — zero overlap is safe, all new messages saved
-        provider.store(
-            "actor:session", listOf(
-                Message.User("brand-new", RequestMetaInfo.Empty),
-                Message.Assistant("brand-new-reply", ResponseMetaInfo.Empty)
-            )
-        )
-
-        assertEquals(1, requestSlot.size)
-        assertEquals(2, requestSlot[0].payload!!.size)
-    }
-
-    // --- Issue fix: multi-payload same eventId matched by eventId+role+content ---
-
-    @Test
-    fun testStoreMultiPayloadSameEventId_MatchesByContent() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        // Remote: one event with 2 payloads sharing the same eventId
-        val remoteEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "Hello"),
-                conversationalPayload(Role.Assistant, "Hi!")
-            )
-        )
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(remoteEvent)
-            nextToken = null
-        }
-
-        val requestSlot = mutableListOf<CreateEventRequest>()
-        coEvery { client.createEvent(capture(requestSlot)) } returns CreateEventResponse {
-            event = makeEvent("evt-2", emptyList())
-        }
-
-        // Incoming: both messages have same eventId (as loaded), plus a new one
-        // With eventId-only matching, both would match the first persisted entry — wrong.
-        // With eventId+role+content matching, each matches its correct counterpart.
-        provider.store(
-            "actor:session", listOf(
-                userMsgWithEventId("Hello", "evt-1"),
-                assistantMsgWithEventId("Hi!", "evt-1"),
-                Message.User("New question", RequestMetaInfo.Empty)
-            )
-        )
-
-        assertEquals(1, requestSlot.size)
-        val savedPayloads = requestSlot[0].payload!!
-        assertEquals(1, savedPayloads.size)
-        val saved = savedPayloads[0] as PayloadType.Conversational
-        assertEquals("New question", (saved.value.content as Content.Text).value)
-    }
-
 }
