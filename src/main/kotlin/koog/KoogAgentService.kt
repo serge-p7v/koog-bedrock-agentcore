@@ -1,17 +1,17 @@
 package ai.jetbrains.koog
 
 import ai.jetbrains.MMDSCredentialsProvider
+import ai.jetbrains.koog.chathistory.AgentcoreChatHistoryProvider
+import ai.koog.agents.chatMemory.feature.ChatMemory
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.agent.entity.ToolSelectionStrategy
-import ai.koog.agents.core.dsl.builder.forwardTo
+import ai.koog.agents.core.agent.singleRunStrategy
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.core.dsl.extension.nodeLLMRequest
 import ai.koog.agents.core.tools.ToolRegistry
-import ai.koog.agents.memory.feature.AgentMemory
 import ai.koog.agents.memory.feature.nodes.nodeLoadAllFactsFromMemory
 import ai.koog.agents.memory.model.MemorySubject
-import ai.koog.agents.snapshot.feature.Persistence
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.bedrock.BedrockClientSettings
 import ai.koog.prompt.executor.clients.bedrock.BedrockLLMClient
@@ -19,6 +19,7 @@ import ai.koog.prompt.executor.clients.bedrock.BedrockModels
 import ai.koog.prompt.executor.clients.bedrock.BedrockRegions
 import ai.koog.prompt.executor.llms.SingleLLMPromptExecutor
 import ai.koog.prompt.executor.llms.all.simpleBedrockExecutor
+import ai.koog.prompt.message.Message
 import aws.sdk.kotlin.runtime.auth.credentials.EnvironmentCredentialsProvider
 import aws.sdk.kotlin.services.bedrockagentcore.BedrockAgentCoreClient
 import aws.smithy.kotlin.runtime.auth.awscredentials.CredentialsProvider
@@ -61,8 +62,8 @@ object KoogAgentService {
             edge(llmCall forwardTo nodeFinish transformed { it.content })
         }
 
-        val awsCredentialsProvider = MMDSCredentialsProvider()
-//        val awsCredentialsProvider = EnvironmentCredentialsProvider()//for local testing
+//        val awsCredentialsProvider = MMDSCredentialsProvider()
+        val awsCredentialsProvider = EnvironmentCredentialsProvider()//for local testing
 
         val agentcoreClient = BedrockAgentCoreClient {
             region = bedrockRegion.regionCode
@@ -71,29 +72,26 @@ object KoogAgentService {
 
         val agent = AIAgent(
             id = AGENT_NAME,
-            promptExecutor = notSoSimpleBedrockExecutor(awsCredentialsProvider),
-//            promptExecutor = simpleBedrockExecutor(System.getenv("AWS_ACCESS_KEY_ID"), System.getenv("AWS_SECRET_ACCESS_KEY")),//for local testing
-            strategy = agentStrategy,
+//            promptExecutor = notSoSimpleBedrockExecutor(awsCredentialsProvider),
+            promptExecutor = simpleBedrockExecutor(System.getenv("AWS_ACCESS_KEY_ID"), System.getenv("AWS_SECRET_ACCESS_KEY")),//for local testing
+            strategy = singleRunStrategy(),
             agentConfig = agentConfig,
             toolRegistry = ToolRegistry.EMPTY,
         ) {
-            install(Persistence) {
-                storage = AgentcoreStorageProvider(agentcoreClient, agentcoreMemoryId, userSessionId ?: DEFAULT_SESSION_ID)
-                enableAutomaticPersistence = true
-            }
-            install(AgentMemory) {
-                memoryProvider = AgentcoreMemoryProvider(agentcoreClient, agentcoreMemoryId, agentcoreMemoryStrategyId, AGENT_NAME)
-                agentName = AGENT_NAME
+            install(ChatMemory) {
+                chatHistoryProvider = AgentcoreChatHistoryProvider(agentcoreClient, agentcoreMemoryId)
+                windowSize(20)
+                filterMessages { it is Message.User || it is Message.Assistant }
             }
         }
 
         return try {
-            agent.run(userPrompt)
+            agent.run(userPrompt, "actorId:sessionId") //fixme: set desired actorId and sessionId
         } catch (e: Exception) {
             logger.error("Error trying to run agent: ${e.message}", e)
             throw e
         } finally {
-            awsCredentialsProvider.close()
+//            awsCredentialsProvider.close()
             isAgentRunning.set(false)
         }
     }
