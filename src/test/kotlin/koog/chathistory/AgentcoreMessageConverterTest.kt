@@ -41,14 +41,14 @@ class AgentcoreMessageConverterTest {
     @Test
     fun testSystemMessageToPayloadReturnsNullWhenIgnored() {
         val message = Message.System("You are a helpful assistant", RequestMetaInfo.Empty)
-        assertNull(AgentcoreMessageConverter.messageToPayload(message, ignoreUnknownRoles = true))
+        assertNull(AgentcoreMessageConverter.messageToPayload(message, ignoreUnsupportedValues = true))
     }
 
     @Test
     fun testSystemMessageToPayloadThrowsWhenNotIgnored() {
         val message = Message.System("You are a helpful assistant", RequestMetaInfo.Empty)
         assertFailsWith<IllegalStateException> {
-            AgentcoreMessageConverter.messageToPayload(message, ignoreUnknownRoles = false)
+            AgentcoreMessageConverter.messageToPayload(message, ignoreUnsupportedValues = false)
         }
     }
 
@@ -97,7 +97,7 @@ class AgentcoreMessageConverterTest {
             role = Role.Tool
             content = Content.Text("tool output")
         }
-        assertNull(AgentcoreMessageConverter.conversationalToMessage(conversational, ignoreUnknownRoles = true))
+        assertNull(AgentcoreMessageConverter.conversationalToMessage(conversational, ignoreUnsupportedValues = true))
     }
 
     @Test
@@ -107,7 +107,7 @@ class AgentcoreMessageConverterTest {
             content = Content.Text("tool output")
         }
         assertFailsWith<IllegalStateException> {
-            AgentcoreMessageConverter.conversationalToMessage(conversational, ignoreUnknownRoles = false)
+            AgentcoreMessageConverter.conversationalToMessage(conversational, ignoreUnsupportedValues = false)
         }
     }
 

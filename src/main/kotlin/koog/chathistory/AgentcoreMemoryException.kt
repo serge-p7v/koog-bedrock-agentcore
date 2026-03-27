@@ -8,25 +8,25 @@ package ai.jetbrains.koog.chathistory
  */
 public open class AgentcoreMemoryException : RuntimeException {
     /**
-     * FIXME
+     * Creates an exception with the given error [message].
      */
     public constructor(message: String) : super(message)
 
     /**
-     * FIXME
+     * Creates an exception with the given error [message] and [cause].
      */
     public constructor(message: String, cause: Throwable) : super(message, cause)
 
     /**
-     * Thrown when a memory retrieval operation fails.
+     * Thrown when a memory read operation fails.
      */
-    public class RetrievalException(message: String, cause: Throwable) :
+    public class ReadException(message: String, cause: Throwable) :
         AgentcoreMemoryException(message, cause)
 
     /**
-     * Thrown when a memory storage operation fails.
+     * Thrown when a memory write operation fails.
      */
-    public class StorageException : AgentcoreMemoryException {
+    public class WriteException : AgentcoreMemoryException {
         public constructor(message: String, cause: Throwable) : super(message, cause)
         public constructor(message: String) : super(message)
     }

@@ -11,7 +11,6 @@ import aws.smithy.kotlin.runtime.SdkBaseException
 import aws.smithy.kotlin.runtime.time.Instant
 import org.slf4j.LoggerFactory
 import java.util.UUID
-import kotlin.time.ExperimentalTime
 
 /**
  * A [ChatHistoryProvider] implementation backed by Amazon Bedrock AgentCore Memory.
@@ -30,26 +29,26 @@ import kotlin.time.ExperimentalTime
  *   in chronological order.
  * - **Loaded messages carry eventId**: Messages returned by [load] have the AgentCore
  *   eventId attached in their metadata, and use the event's original timestamp.
- * - **Configurable non-conversational handling**: controlled by [ignoreUnknownRoles].
+ * - **Configurable non-conversational handling**: controlled by [ignoreUnsupportedValues].
  * - **Plain text only**: Only conversational messages with plain-text content are supported.
- *   Messages with attachments or non-text parts are rejected or skipped based on [ignoreUnknownRoles].
+ *   Messages with attachments or non-text parts are rejected or skipped based on [ignoreUnsupportedValues].
  *
  * @param client The Bedrock AgentCore client used for API calls.
  * @param memoryId The AgentCore memory identifier (must not be blank).
  * @param defaultSession Session ID used when conversationId has no session component.
  * @param pageSize Maximum number of events per page when listing events.
  * @param totalEventsLimit Optional cap on the total number of events to fetch during [load].
- * @param ignoreUnknownRoles If `true`, non-conversational message/role types are silently skipped.
+ * @param ignoreUnsupportedValues If `true`, non-conversational message/role types are silently skipped.
  *   If `false`, they cause an [IllegalStateException].
  * @throws AgentcoreMemoryException.ConfigurationException if [memoryId] is blank.
  */
 public class AgentcoreChatHistoryProvider(
     public val client: BedrockAgentCoreClient,
     public val memoryId: String,
-    defaultSession: String = AgentcoreConversationIdParser.DEFAULT_SESSION,
+    defaultSession: String = AgentcoreConversationIdParser.Companion.DEFAULT_SESSION,
     public val pageSize: Int = DEFAULT_PAGE_SIZE,
     public val totalEventsLimit: Int? = null,
-    public val ignoreUnknownRoles: Boolean = true
+    public val ignoreUnsupportedValues: Boolean = true
 ) : ChatHistoryProvider {
 
     private val conversationIdParser = AgentcoreConversationIdParser(defaultSession)
@@ -75,7 +74,7 @@ public class AgentcoreChatHistoryProvider(
         val deltaPayloads = messages
             .filter { AgentcoreMessageConverter.getEventId(it) == null }
             .mapNotNull { msg ->
-                AgentcoreMessageConverter.messageToPayload(msg, ignoreUnknownRoles)
+                AgentcoreMessageConverter.messageToPayload(msg, ignoreUnsupportedValues)
             }
 
         if (deltaPayloads.isEmpty()) return
@@ -94,18 +93,17 @@ public class AgentcoreChatHistoryProvider(
             val response = client.createEvent(request)
             logger.info("Created event ${response.event}")
         } catch (e: SdkBaseException) {
-            throw AgentcoreMemoryException.StorageException(
+            throw AgentcoreMemoryException.WriteException(
                 "Failed to save messages for conversation: $conversationId",
                 e
             )
         }
     }
 
-    @OptIn(ExperimentalTime::class)
     override suspend fun load(conversationId: String): List<Message> {
         val (actorId, sessionId) = conversationIdParser.parse(conversationId)
 
-        val events: List<Event> = fetchAllEvents(actorId, sessionId)
+        val events: List<Event> = fetchEvents(actorId, sessionId, eventsLimit = totalEventsLimit)
 
         logger.info("Loaded ${events.flatMap { it.payload }} payloads")
 
@@ -115,7 +113,10 @@ public class AgentcoreChatHistoryProvider(
     private fun eventsToMessages(events: List<Event>): List<Message> {
         return events.flatMap { event ->
             val eventId = event.eventId
-            val eventTimestamp = smithyInstantToKotlin(event.eventTimestamp)
+            val eventTimestamp = kotlin.time.Instant.fromEpochSeconds(
+                event.eventTimestamp.epochSeconds,
+                event.eventTimestamp.nanosecondsOfSecond.toLong()
+            )
             event.payload.mapNotNull { payload ->
                 when (payload) {
                     is PayloadType.Conversational -> {
@@ -123,12 +124,12 @@ public class AgentcoreChatHistoryProvider(
                             payload.value,
                             eventId = eventId,
                             timestamp = eventTimestamp,
-                            ignoreUnknownRoles = ignoreUnknownRoles
+                            ignoreUnsupportedValues = ignoreUnsupportedValues
                         )
                     }
 
                     else -> {
-                        if (ignoreUnknownRoles) {
+                        if (ignoreUnsupportedValues) {
                             null
                         } else {
                             throw IllegalStateException(
@@ -139,13 +140,6 @@ public class AgentcoreChatHistoryProvider(
                 }
             }
         }
-    }
-
-    /**
-     * Fetches all events for [load], honoring [totalEventsLimit].
-     */
-    private suspend fun fetchAllEvents(actorId: String, sessionId: String): List<Event> {
-        return fetchEvents(actorId, sessionId, eventsLimit = totalEventsLimit)
     }
 
     /**
@@ -193,7 +187,7 @@ public class AgentcoreChatHistoryProvider(
             allEvents.reverse()
             return allEvents
         } catch (e: SdkBaseException) {
-            throw AgentcoreMemoryException.RetrievalException(
+            throw AgentcoreMemoryException.ReadException(
                 "Failed to fetch events for actor: $actorId, session: $sessionId",
                 e
             )
@@ -208,17 +202,5 @@ public class AgentcoreChatHistoryProvider(
          * Default page size for listing events.
          */
         public const val DEFAULT_PAGE_SIZE: Int = 100
-
-        /**
-         * Converts a Smithy [Instant] to a Kotlin [kotlin.time.Instant].
-         */
-        @OptIn(ExperimentalTime::class)
-        internal fun smithyInstantToKotlin(smithyInstant: Instant): kotlin.time.Instant {
-            return kotlin.time.Instant.fromEpochSeconds(
-                smithyInstant.epochSeconds,
-                smithyInstant.nanosecondsOfSecond.toLong()
-            )
-        }
-
     }
 }

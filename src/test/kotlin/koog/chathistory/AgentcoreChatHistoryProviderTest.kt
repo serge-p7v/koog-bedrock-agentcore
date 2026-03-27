@@ -13,44 +13,31 @@ import aws.sdk.kotlin.services.bedrockagentcore.model.ListEventsRequest
 import aws.sdk.kotlin.services.bedrockagentcore.model.ListEventsResponse
 import aws.sdk.kotlin.services.bedrockagentcore.model.PayloadType
 import aws.sdk.kotlin.services.bedrockagentcore.model.Role
+import aws.smithy.kotlin.runtime.ServiceException
 import aws.smithy.kotlin.runtime.time.Instant
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
-import kotlin.time.ExperimentalTime
+import kotlin.time.Clock
 
 class AgentcoreChatHistoryProviderTest {
 
-    private val client = mockk<BedrockAgentCoreClient>(relaxed = true)
-
-    private fun makeEvent(
-        eventId: String,
-        payloads: List<PayloadType>,
-        actorId: String = "actor",
-        sessionId: String = "session",
-        memoryId: String = "mem-1",
-        eventTimestamp: Instant? = Instant.now()
-    ): Event = Event {
-        this.eventId = eventId
-        this.actorId = actorId
-        this.sessionId = sessionId
-        this.memoryId = memoryId
-        this.eventTimestamp = eventTimestamp
-        this.payload = payloads
+    companion object {
+        private val client = mockk<BedrockAgentCoreClient>(relaxed = true)
     }
 
-    private fun conversationalPayload(role: Role, text: String): PayloadType.Conversational {
-        return PayloadType.Conversational(Conversational {
-            this.role = role
-            this.content = Content.Text(text)
-        })
+    @BeforeTest
+    fun setUp() {
+        clearMocks(client)
     }
 
     // --- Config validation ---
@@ -77,7 +64,8 @@ class AgentcoreChatHistoryProviderTest {
         }
 
         provider.store(
-            "actor:session", listOf(
+            "actor:session",
+            listOf(
                 Message.User("Hello", RequestMetaInfo.Empty),
                 Message.Assistant("Hi!", ResponseMetaInfo.Empty)
             )
@@ -103,7 +91,8 @@ class AgentcoreChatHistoryProviderTest {
         }
 
         provider.store(
-            "actor:session", listOf(
+            "actor:session",
+            listOf(
                 Message.User("Hello", RequestMetaInfo.Empty),
                 Message.Assistant("Hi!", ResponseMetaInfo.Empty)
             )
@@ -163,8 +152,8 @@ class AgentcoreChatHistoryProviderTest {
     }
 
     @Test
-    fun testStoreFailsOnUnknownRolesWhenConfigured() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1", ignoreUnknownRoles = false)
+    fun testStoreFailsOnUnsupportedValuesWhenConfigured() = runTest {
+        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1", ignoreUnsupportedValues = false)
 
         val messages = listOf(
             Message.System("system prompt", RequestMetaInfo.Empty)
@@ -177,28 +166,6 @@ class AgentcoreChatHistoryProviderTest {
 
     // --- store: eventId-based delta detection ---
 
-    @OptIn(ExperimentalTime::class)
-    private fun userMsgWithEventId(text: String, eventId: String): Message.User {
-        return Message.User(
-            text,
-            RequestMetaInfo(
-                timestamp = kotlin.time.Clock.System.now(),
-                metadata = JsonObject(mapOf(EVENT_ID_METADATA_KEY to JsonPrimitive(eventId)))
-            )
-        )
-    }
-
-    @OptIn(ExperimentalTime::class)
-    private fun assistantMsgWithEventId(text: String, eventId: String): Message.Assistant {
-        return Message.Assistant(
-            text,
-            ResponseMetaInfo(
-                timestamp = kotlin.time.Clock.System.now(),
-                metadata = JsonObject(mapOf(EVENT_ID_METADATA_KEY to JsonPrimitive(eventId)))
-            )
-        )
-    }
-
     @Test
     fun testStoreSkipsMessagesWithEventId() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
@@ -210,7 +177,8 @@ class AgentcoreChatHistoryProviderTest {
 
         // Messages with eventId (loaded from AgentCore) + new message without eventId
         provider.store(
-            "actor:session", listOf(
+            "actor:session",
+            listOf(
                 userMsgWithEventId("Hello", "evt-1"),
                 assistantMsgWithEventId("Hi!", "evt-1"),
                 Message.User("Follow-up question", RequestMetaInfo.Empty)
@@ -230,7 +198,8 @@ class AgentcoreChatHistoryProviderTest {
 
         // All messages already persisted (have eventId)
         provider.store(
-            "actor:session", listOf(
+            "actor:session",
+            listOf(
                 userMsgWithEventId("Hello", "evt-1"),
                 assistantMsgWithEventId("Hi!", "evt-1")
             )
@@ -250,7 +219,8 @@ class AgentcoreChatHistoryProviderTest {
 
         // System message (filtered), persisted User (has eventId), new Assistant (no eventId)
         provider.store(
-            "actor:session", listOf(
+            "actor:session",
+            listOf(
                 Message.System("system prompt", RequestMetaInfo.Empty),
                 userMsgWithEventId("Hello", "evt-1"),
                 Message.Assistant("Hi!", ResponseMetaInfo.Empty)
@@ -302,7 +272,8 @@ class AgentcoreChatHistoryProviderTest {
         }
 
         provider.store(
-            "actor:session", listOf(
+            "actor:session",
+            listOf(
                 userMsgWithEventId("Hello", "evt-1"),
                 assistantMsgWithEventId("Hi!", "evt-1"),
                 Message.User("Question 1", RequestMetaInfo.Empty),
@@ -337,7 +308,8 @@ class AgentcoreChatHistoryProviderTest {
         }
 
         provider.store(
-            "actor:session", listOf(
+            "actor:session",
+            listOf(
                 Message.User("new message", RequestMetaInfo.Empty),
                 assistantMsgWithEventId("persisted message", "evt-1")
             )
@@ -359,12 +331,8 @@ class AgentcoreChatHistoryProviderTest {
     fun testLoadReturnsAllMessages() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
-        val event = makeEvent(
-            "evt-42", listOf(
-                conversationalPayload(Role.User, "Hello"),
-                conversationalPayload(Role.Assistant, "Hi!")
-            )
-        )
+        val event =
+            makeEvent("evt-42", listOf(conversational(Role.User, "Hello"), conversational(Role.Assistant, "Hi!")))
 
         coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
             events = listOf(event)
@@ -397,11 +365,11 @@ class AgentcoreChatHistoryProviderTest {
     fun testLoadReturnsMessagesWithEventIdMetadata() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
+        val pastTimestamp = Instant.fromEpochSeconds(1000000L, 0)
         val event = makeEvent(
-            "evt-42", listOf(
-                conversationalPayload(Role.User, "Hello"),
-                conversationalPayload(Role.Assistant, "Hi!")
-            )
+            "evt-42",
+            listOf(conversational(Role.User, "Hello"), conversational(Role.Assistant, "Hi!")),
+            eventTimestamp = pastTimestamp
         )
 
         coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
@@ -414,29 +382,10 @@ class AgentcoreChatHistoryProviderTest {
         assertEquals(2, messages.size)
         assertEquals("evt-42", AgentcoreMessageConverter.getEventId(messages[0]))
         assertEquals("evt-42", AgentcoreMessageConverter.getEventId(messages[1]))
-    }
-
-    @OptIn(ExperimentalTime::class)
-    @Test
-    fun testLoadUsesEventTimestampNotNow() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        val pastTimestamp = Instant.fromEpochSeconds(1000000L, 0)
-        val event = makeEvent(
-            "evt-1",
-            listOf(conversationalPayload(Role.User, "Hello")),
-            eventTimestamp = pastTimestamp
+        val expectedKotlinInstant = kotlin.time.Instant.fromEpochSeconds(
+            pastTimestamp.epochSeconds,
+            pastTimestamp.nanosecondsOfSecond.toLong()
         )
-
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(event)
-            nextToken = null
-        }
-
-        val messages = provider.load("actor:session")
-        assertEquals(1, messages.size)
-
-        val expectedKotlinInstant = AgentcoreChatHistoryProvider.smithyInstantToKotlin(pastTimestamp)
         assertEquals(expectedKotlinInstant, messages[0].metaInfo.timestamp)
     }
 
@@ -446,16 +395,8 @@ class AgentcoreChatHistoryProviderTest {
     fun testLoadAllEventsReversesToChronological() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
-        val newestEvent = makeEvent(
-            "evt-2", listOf(
-                conversationalPayload(Role.Assistant, "response")
-            )
-        )
-        val oldestEvent = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "question")
-            )
-        )
+        val newestEvent = makeEvent("evt-2", listOf(conversational(Role.Assistant, "response")))
+        val oldestEvent = makeEvent("evt-1", listOf(conversational(Role.User, "question")))
 
         coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
             events = listOf(newestEvent, oldestEvent)
@@ -475,8 +416,8 @@ class AgentcoreChatHistoryProviderTest {
     fun testLoadAllEventsPaginatesThroughAllPages() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1", pageSize = 1)
 
-        val event2 = makeEvent("evt-2", listOf(conversationalPayload(Role.Assistant, "page1-msg")))
-        val event1 = makeEvent("evt-1", listOf(conversationalPayload(Role.User, "page2-msg")))
+        val event2 = makeEvent("evt-2", listOf(conversational(Role.Assistant, "page1-msg")))
+        val event1 = makeEvent("evt-1", listOf(conversational(Role.User, "page2-msg")))
 
         var callCount = 0
         coEvery { client.listEvents(any<ListEventsRequest>()) } answers {
@@ -504,11 +445,10 @@ class AgentcoreChatHistoryProviderTest {
 
     @Test
     fun testLoadAllEventsRespectsEventsLimit() = runTest {
-        val provider =
-            AgentcoreChatHistoryProvider(client, memoryId = "mem-1", totalEventsLimit = 1)
+        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1", totalEventsLimit = 1)
 
-        val event1 = makeEvent("evt-1", listOf(conversationalPayload(Role.User, "msg1")))
-        val event2 = makeEvent("evt-2", listOf(conversationalPayload(Role.Assistant, "msg2")))
+        val event1 = makeEvent("evt-1", listOf(conversational(Role.User, "msg1")))
+        val event2 = makeEvent("evt-2", listOf(conversational(Role.Assistant, "msg2")))
 
         coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
             events = listOf(event1, event2)
@@ -520,17 +460,18 @@ class AgentcoreChatHistoryProviderTest {
         assertEquals(1, messages.size)
     }
 
-    // --- Unknown-role handling ---
+    // --- Unsupported value handling ---
 
     @Test
-    fun testLoadIgnoresUnknownRolesByDefault() = runTest {
+    fun testLoadIgnoresUnsupportedValuesByDefault() = runTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
         val event = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "hello"),
-                conversationalPayload(Role.Tool, "tool output"),
-                conversationalPayload(Role.Assistant, "hi")
+            "evt-1",
+            listOf(
+                conversational(Role.User, "hello"),
+                conversational(Role.Tool, "tool output"),
+                conversational(Role.Assistant, "hi")
             )
         )
 
@@ -547,14 +488,10 @@ class AgentcoreChatHistoryProviderTest {
     }
 
     @Test
-    fun testLoadFailsOnUnknownRolesWhenConfigured() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1", ignoreUnknownRoles = false)
+    fun testLoadFailsOnUnsupportedValuesWhenConfigured() = runTest {
+        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1", ignoreUnsupportedValues = false)
 
-        val event = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.Tool, "tool output")
-            )
-        )
+        val event = makeEvent("evt-1", listOf(conversational(Role.Tool, "tool output")))
 
         coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
             events = listOf(event)
@@ -573,9 +510,9 @@ class AgentcoreChatHistoryProviderTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
         coEvery { client.createEvent(any<CreateEventRequest>()) } throws
-                aws.smithy.kotlin.runtime.ServiceException("AWS error")
+                ServiceException("AWS error")
 
-        assertFailsWith<AgentcoreMemoryException.StorageException> {
+        assertFailsWith<AgentcoreMemoryException.WriteException> {
             provider.store("actor:session", listOf(Message.User("hi", RequestMetaInfo.Empty)))
         }
     }
@@ -585,9 +522,9 @@ class AgentcoreChatHistoryProviderTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
         coEvery { client.listEvents(any<ListEventsRequest>()) } throws
-                aws.smithy.kotlin.runtime.ServiceException("AWS error")
+                ServiceException("AWS error")
 
-        assertFailsWith<AgentcoreMemoryException.RetrievalException> {
+        assertFailsWith<AgentcoreMemoryException.ReadException> {
             provider.load("actor:session")
         }
     }
@@ -606,32 +543,12 @@ class AgentcoreChatHistoryProviderTest {
         provider.load("myActor")
 
         coVerify {
-            client.listEvents(match<ListEventsRequest> {
-                it.sessionId == "my-session" && it.actorId == "myActor"
-            })
-        }
-    }
-
-    // --- Non-text conversational content handling ---
-
-    @Test
-    fun testLoadSkipsNonTextContentByDefault() = runTest {
-        val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
-
-        val event = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "hello"),
-                conversationalPayload(Role.Assistant, "hi")
+            client.listEvents(
+                match<ListEventsRequest> {
+                    it.sessionId == "my-session" && it.actorId == "myActor"
+                }
             )
-        )
-
-        coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
-            events = listOf(event)
-            nextToken = null
         }
-
-        val messages = provider.load("actor:session")
-        assertEquals(2, messages.size)
     }
 
     // --- Round-trip: load → store only saves new messages ---
@@ -641,12 +558,8 @@ class AgentcoreChatHistoryProviderTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
         // Simulate load: returns messages with eventId in metadata
-        val event = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "Hello"),
-                conversationalPayload(Role.Assistant, "Hi!")
-            )
-        )
+        val event =
+            makeEvent("evt-1", listOf(conversational(Role.User, "Hello"), conversational(Role.Assistant, "Hi!")))
         coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
             events = listOf(event)
             nextToken = null
@@ -682,12 +595,8 @@ class AgentcoreChatHistoryProviderTest {
         val provider = AgentcoreChatHistoryProvider(client, memoryId = "mem-1")
 
         // Simulate load
-        val event = makeEvent(
-            "evt-1", listOf(
-                conversationalPayload(Role.User, "Hello"),
-                conversationalPayload(Role.Assistant, "Hi!")
-            )
-        )
+        val event =
+            makeEvent("evt-1", listOf(conversational(Role.User, "Hello"), conversational(Role.Assistant, "Hi!")))
         coEvery { client.listEvents(any<ListEventsRequest>()) } returns ListEventsResponse {
             events = listOf(event)
             nextToken = null
@@ -699,5 +608,50 @@ class AgentcoreChatHistoryProviderTest {
         provider.store("actor:session", loaded)
 
         coVerify(exactly = 0) { client.createEvent(any<CreateEventRequest>()) }
+    }
+
+    private fun makeEvent(
+        eventId: String,
+        payloads: List<PayloadType>,
+        actorId: String = "actor",
+        sessionId: String = "session",
+        memoryId: String = "mem-1",
+        eventTimestamp: Instant? = Instant.now()
+    ): Event = Event {
+        this.eventId = eventId
+        this.actorId = actorId
+        this.sessionId = sessionId
+        this.memoryId = memoryId
+        this.eventTimestamp = eventTimestamp
+        this.payload = payloads
+    }
+
+    private fun conversational(role: Role, text: String): PayloadType.Conversational {
+        return PayloadType.Conversational(
+            Conversational {
+                this.role = role
+                this.content = Content.Text(text)
+            }
+        )
+    }
+
+    private fun userMsgWithEventId(text: String, eventId: String): Message.User {
+        return Message.User(
+            text,
+            RequestMetaInfo(
+                timestamp = Clock.System.now(),
+                metadata = JsonObject(mapOf(EVENT_ID_METADATA_KEY to JsonPrimitive(eventId)))
+            )
+        )
+    }
+
+    private fun assistantMsgWithEventId(text: String, eventId: String): Message.Assistant {
+        return Message.Assistant(
+            text,
+            ResponseMetaInfo(
+                timestamp = Clock.System.now(),
+                metadata = JsonObject(mapOf(EVENT_ID_METADATA_KEY to JsonPrimitive(eventId)))
+            )
+        )
     }
 }

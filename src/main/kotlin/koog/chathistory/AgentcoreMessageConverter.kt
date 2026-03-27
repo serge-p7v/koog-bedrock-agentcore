@@ -25,11 +25,11 @@ public const val EVENT_ID_METADATA_KEY: String = "agentcore.eventId"
  * This converter is intentionally limited to conversational message types only:
  * [Message.User] and [Message.Assistant]. Non-conversational message types
  * (System, Tool, Reasoning, attachments) are outside the scope of this provider
- * and are silently skipped when [ignoreUnknownRoles] is `true`, or cause an
+ * and are silently skipped when [ignoreUnsupportedValues] is `true`, or cause an
  * [IllegalStateException] when `false`.
  *
  * Only plain-text conversational content is supported. Messages with attachments
- * or non-text parts are rejected or skipped based on [ignoreUnknownRoles].
+ * or non-text parts are rejected or skipped based on [ignoreUnsupportedValues].
  *
  * @see AgentcoreConversationIdParser
  * @see AgentcoreChatHistoryProvider
@@ -43,18 +43,18 @@ public object AgentcoreMessageConverter {
      * Messages with attachments or non-text parts are treated as unsupported content.
      *
      * @param message The Koog message to convert.
-     * @param ignoreUnknownRoles If `true`, unsupported message types or non-text content return `null`.
+     * @param ignoreUnsupportedValues If `true`, unsupported message types or non-text content return `null`.
      *   If `false`, they throw [IllegalStateException].
      * @return The converted payload, or `null` if the message is unsupported
-     *   and [ignoreUnknownRoles] is `true`.
-     * @throws IllegalStateException if the message is unsupported and [ignoreUnknownRoles] is `false`.
+     *   and [ignoreUnsupportedValues] is `true`.
+     * @throws IllegalStateException if the message is unsupported and [ignoreUnsupportedValues] is `false`.
      */
-    internal fun messageToPayload(message: Message, ignoreUnknownRoles: Boolean = true): PayloadType.Conversational? {
+    internal fun messageToPayload(message: Message, ignoreUnsupportedValues: Boolean = true): PayloadType.Conversational? {
         val role = when (message) {
             is Message.User -> Role.User
             is Message.Assistant -> Role.Assistant
             else -> {
-                if (ignoreUnknownRoles) {
+                if (ignoreUnsupportedValues) {
                     return null
                 } else {
                     throw IllegalStateException(
@@ -66,7 +66,7 @@ public object AgentcoreMessageConverter {
 
         // Reject conversational messages with attachments or non-text parts
         if (message.hasAttachments() || !message.hasOnlyTextContent()) {
-            if (ignoreUnknownRoles) {
+            if (ignoreUnsupportedValues) {
                 // Skip unsupported conversational content (attachments / non-text parts)
                 return null
             } else {
@@ -93,26 +93,26 @@ public object AgentcoreMessageConverter {
      * non-conversational and intentionally outside the scope of this provider.
      *
      * Only [Content.Text] is supported. Non-text content returns `null` or throws
-     * based on [ignoreUnknownRoles].
+     * based on [ignoreUnsupportedValues].
      *
      * @param conversational The AgentCore conversational payload.
      * @param eventId The AgentCore event ID to attach as metadata, or `null` to omit.
      * @param timestamp The event timestamp to use for the message. If `null`, [Clock.System.now] is used.
-     * @param ignoreUnknownRoles If `true`, unsupported roles or non-text content return `null`.
+     * @param ignoreUnsupportedValues If `true`, unsupported roles or non-text content return `null`.
      *   If `false`, they throw [IllegalStateException].
-     * @return The converted message, or `null` if unsupported and [ignoreUnknownRoles] is `true`.
-     * @throws IllegalStateException if unsupported and [ignoreUnknownRoles] is `false`.
+     * @return The converted message, or `null` if unsupported and [ignoreUnsupportedValues] is `true`.
+     * @throws IllegalStateException if unsupported and [ignoreUnsupportedValues] is `false`.
      */
     @OptIn(ExperimentalTime::class)
     internal fun conversationalToMessage(
         conversational: Conversational,
         eventId: String? = null,
         timestamp: Instant? = null,
-        ignoreUnknownRoles: Boolean = true
+        ignoreUnsupportedValues: Boolean = true
     ): Message? {
         val textContent = conversational.content as? Content.Text
         if (textContent == null) {
-            if (ignoreUnknownRoles) {
+            if (ignoreUnsupportedValues) {
                 // Skip non-text AWS content
                 return null
             } else {
@@ -139,7 +139,7 @@ public object AgentcoreMessageConverter {
             )
 
             else -> {
-                if (ignoreUnknownRoles) {
+                if (ignoreUnsupportedValues) {
                     null
                 } else {
                     throw IllegalStateException(
