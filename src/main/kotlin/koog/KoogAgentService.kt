@@ -1,15 +1,22 @@
 package ai.jetbrains.koog
 
 import ai.jetbrains.MMDSCredentialsProvider
+import ai.jetbrains.ai.jetbrains.koog.AgentcoreRetrievalStorage
 import ai.jetbrains.koog.chathistory.AgentcoreChatHistoryProvider
 import ai.koog.agents.chatMemory.feature.ChatMemory
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.agent.entity.ToolSelectionStrategy
 import ai.koog.agents.core.agent.singleRunStrategy
+import ai.koog.agents.core.annotation.ExperimentalAgentsApi
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.core.dsl.extension.nodeLLMRequest
 import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.longtermmemory.feature.LongTermMemory
+import ai.koog.agents.longtermmemory.retrieval.RetrievalSettings
+import ai.koog.agents.longtermmemory.retrieval.RetrievalStorage
+import ai.koog.agents.longtermmemory.retrieval.SimilaritySearchStrategy
+import ai.koog.agents.longtermmemory.retrieval.augmentation.SystemPromptAugmenter
 import ai.koog.agents.memory.feature.nodes.nodeLoadAllFactsFromMemory
 import ai.koog.agents.memory.model.MemorySubject
 import ai.koog.prompt.dsl.prompt
@@ -26,6 +33,7 @@ import aws.smithy.kotlin.runtime.auth.awscredentials.CredentialsProvider
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicBoolean
 
+@OptIn(ExperimentalAgentsApi::class)
 object KoogAgentService {
     private val logger = LoggerFactory.getLogger("KoogAgentService")
 
@@ -70,6 +78,9 @@ object KoogAgentService {
             credentialsProvider = awsCredentialsProvider
         }
 
+        val agentcoreActorId = "myActorId"
+        val agentcoreNamespace = "/strategies/$agentcoreMemoryStrategyId/actors/$agentcoreActorId"
+
         val agent = AIAgent(
             id = AGENT_NAME,
 //            promptExecutor = notSoSimpleBedrockExecutor(awsCredentialsProvider),
@@ -78,15 +89,30 @@ object KoogAgentService {
             agentConfig = agentConfig,
             toolRegistry = ToolRegistry.EMPTY,
         ) {
-            install(ChatMemory) {
-                chatHistoryProvider = AgentcoreChatHistoryProvider(agentcoreClient, agentcoreMemoryId)
-                windowSize(20)
-                filterMessages { it is Message.User || it is Message.Assistant }
+//            install(ChatMemory) {
+//                chatHistoryProvider = AgentcoreChatHistoryProvider(agentcoreClient, agentcoreMemoryId)
+//                windowSize(20)
+//                filterMessages { it is Message.User || it is Message.Assistant }
+//            }
+            install(LongTermMemory) {
+                retrievalSettings = RetrievalSettings(
+                    AgentcoreRetrievalStorage(client = agentcoreClient, agentcoreMemoryId = agentcoreMemoryId, agentcoreMemoryStrategyId = agentcoreMemoryStrategyId),
+                    SimilaritySearchStrategy(3),
+                    SystemPromptAugmenter(),
+                    agentcoreNamespace
+                )
+//                retrieval {
+//                    storage = AgentcoreRetrievalStorage(client = agentcoreClient, agentcoreMemoryId = agentcoreMemoryId,
+//                        agentcoreMemoryStrategyId = agentcoreMemoryStrategyId, actorId = agentcoreActorId)
+//                    searchStrategy = SimilaritySearchStrategy(3)
+//                    promptAugmenter = SystemPromptAugmenter()
+////                    namespace = agentcoreNamespace //fixme: enable in builders!
+//                }
             }
         }
 
         return try {
-            agent.run(userPrompt, "myActorId:mySessionId") //FIXME: set desired actorId and sessionId
+            agent.run(userPrompt, "$agentcoreActorId:mySessionId") //FIXME: set desired actorId and sessionId
         } catch (e: Exception) {
             logger.error("Error trying to run agent: ${e.message}", e)
             throw e
