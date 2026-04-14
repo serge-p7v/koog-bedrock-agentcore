@@ -66,7 +66,10 @@ object KoogAgentService {
                 retrieval {
                     storage = AgentcoreSearchStorage(agentcoreClient, agentcoreMemoryId, agentcoreMemoryStrategyId)
                     searchStrategy = AgentcoreSimilaritySearchStrategy(AgentcoreLongTermStrategyType.SEMANTIC)
-                    namespace = AgentcoreNamespaceStringBuilder(agentcoreMemoryStrategyId).withActorId("actorId").withSessionId("sessionId").build()
+                    namespace = AgentcoreNamespaceStringBuilder(agentcoreMemoryStrategyId)
+                        .withActorId(DEFAULT_ACTOR_ID)
+                        .withSessionId(DEFAULT_SESSION_ID)
+                        .build()
                 }
             }
         }
