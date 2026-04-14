@@ -1,9 +1,9 @@
-package ai.jetbrains.koog.chathistory
+package ai.koog.agents.features.longtermmemory.aws
 
 /**
  * Base exception for AgentCore Memory operations.
  *
- * Wraps AWS SDK failures so that callers of [AgentcoreChatHistoryProvider]
+ * Wraps AWS SDK failures so that callers of [AgentcoreSearchStorage]
  * do not need to depend on AWS-specific exception types.
  */
 public open class AgentcoreMemoryException : RuntimeException {
@@ -18,18 +18,10 @@ public open class AgentcoreMemoryException : RuntimeException {
     public constructor(message: String, cause: Throwable) : super(message, cause)
 
     /**
-     * Thrown when a memory read operation fails.
+     * Thrown when a memory retrieve operation fails.
      */
-    public class ReadException(message: String, cause: Throwable) :
+    public class RetrieveException(message: String, cause: Throwable) :
         AgentcoreMemoryException(message, cause)
-
-    /**
-     * Thrown when a memory write operation fails.
-     */
-    public class WriteException : AgentcoreMemoryException {
-        public constructor(message: String, cause: Throwable) : super(message, cause)
-        public constructor(message: String) : super(message)
-    }
 
     /**
      * Thrown when memory configuration is invalid.

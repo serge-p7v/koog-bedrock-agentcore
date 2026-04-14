@@ -1,35 +1,23 @@
 package ai.jetbrains.koog
 
-import ai.jetbrains.MMDSCredentialsProvider
-import ai.jetbrains.ai.jetbrains.koog.AgentcoreRetrievalStorage
-import ai.jetbrains.koog.chathistory.AgentcoreChatHistoryProvider
 import ai.koog.agents.chatMemory.feature.ChatMemory
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
-import ai.koog.agents.core.agent.entity.ToolSelectionStrategy
 import ai.koog.agents.core.agent.singleRunStrategy
 import ai.koog.agents.core.annotation.ExperimentalAgentsApi
-import ai.koog.agents.core.dsl.builder.strategy
-import ai.koog.agents.core.dsl.extension.nodeLLMRequest
 import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.features.chathistory.aws.AgentcoreChatHistoryProvider
+import ai.koog.agents.features.longtermmemory.aws.AgentcoreLongTermStrategyType
+import ai.koog.agents.features.longtermmemory.aws.AgentcoreNamespaceStringBuilder
+import ai.koog.agents.features.longtermmemory.aws.AgentcoreSearchStorage
+import ai.koog.agents.features.longtermmemory.aws.AgentcoreSimilaritySearchStrategy
 import ai.koog.agents.longtermmemory.feature.LongTermMemory
-import ai.koog.agents.longtermmemory.retrieval.RetrievalSettings
-import ai.koog.agents.longtermmemory.retrieval.RetrievalStorage
-import ai.koog.agents.longtermmemory.retrieval.SimilaritySearchStrategy
-import ai.koog.agents.longtermmemory.retrieval.augmentation.SystemPromptAugmenter
-import ai.koog.agents.memory.feature.nodes.nodeLoadAllFactsFromMemory
-import ai.koog.agents.memory.model.MemorySubject
 import ai.koog.prompt.dsl.prompt
-import ai.koog.prompt.executor.clients.bedrock.BedrockClientSettings
-import ai.koog.prompt.executor.clients.bedrock.BedrockLLMClient
 import ai.koog.prompt.executor.clients.bedrock.BedrockModels
 import ai.koog.prompt.executor.clients.bedrock.BedrockRegions
-import ai.koog.prompt.executor.llms.SingleLLMPromptExecutor
 import ai.koog.prompt.executor.llms.all.simpleBedrockExecutor
-import ai.koog.prompt.message.Message
 import aws.sdk.kotlin.runtime.auth.credentials.EnvironmentCredentialsProvider
 import aws.sdk.kotlin.services.bedrockagentcore.BedrockAgentCoreClient
-import aws.smithy.kotlin.runtime.auth.awscredentials.CredentialsProvider
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -41,6 +29,7 @@ object KoogAgentService {
 
     private const val AGENT_NAME = "memory-agent"
     private const val DEFAULT_SESSION_ID = "DEFAULT"
+    private const val DEFAULT_ACTOR_ID = "default"
 
     private val isAgentRunning = AtomicBoolean(false)
 
@@ -53,66 +42,37 @@ object KoogAgentService {
             prompt = prompt("Generic Prompt") {
                 system("You are a helpful assistant.")
             },
-            model = BedrockModels.AmazonNovaMicro,//TODO: tool calling does not work due to https://github.com/JetBrains/koog/issues/1209
+            model = BedrockModels.AmazonNovaMicro,
             maxAgentIterations = 10
         )
 
-        val agentStrategy = strategy<String, String>("memory-loading-llm", toolSelectionStrategy = ToolSelectionStrategy.NONE) {
-            val loadAll by nodeLoadAllFactsFromMemory<String>(
-                name = "loadMemoryNode",
-                subjects = listOf(MemorySubject.Everything)
-            )
-
-            val llmCall by nodeLLMRequest("llmCall")
-
-            edge(nodeStart forwardTo loadAll)
-            edge(loadAll forwardTo llmCall)
-            edge(llmCall forwardTo nodeFinish transformed { it.content })
-        }
-
-//        val awsCredentialsProvider = MMDSCredentialsProvider()
-        val awsCredentialsProvider = EnvironmentCredentialsProvider()//for local testing
-
         val agentcoreClient = BedrockAgentCoreClient {
             region = bedrockRegion.regionCode
-            credentialsProvider = awsCredentialsProvider
+            credentialsProvider = EnvironmentCredentialsProvider()
         }
-
-        val agentcoreActorId = "myActorId"
-        val agentcoreNamespace = "/strategies/$agentcoreMemoryStrategyId/actors/$agentcoreActorId"
 
         val agent = AIAgent(
             id = AGENT_NAME,
-//            promptExecutor = notSoSimpleBedrockExecutor(awsCredentialsProvider),
             promptExecutor = simpleBedrockExecutor(System.getenv("AWS_ACCESS_KEY_ID"), System.getenv("AWS_SECRET_ACCESS_KEY")),//for local testing
             strategy = singleRunStrategy(),
             agentConfig = agentConfig,
             toolRegistry = ToolRegistry.EMPTY,
         ) {
-//            install(ChatMemory) {
-//                chatHistoryProvider = AgentcoreChatHistoryProvider(agentcoreClient, agentcoreMemoryId)
-//                windowSize(20)
-//                filterMessages { it is Message.User || it is Message.Assistant }
-//            }
+            install(ChatMemory) {
+                chatHistoryProvider = AgentcoreChatHistoryProvider(agentcoreClient, agentcoreMemoryId)
+                windowSize(20)
+            }
             install(LongTermMemory) {
-                retrievalSettings = RetrievalSettings(
-                    AgentcoreRetrievalStorage(client = agentcoreClient, agentcoreMemoryId = agentcoreMemoryId, agentcoreMemoryStrategyId = agentcoreMemoryStrategyId),
-                    SimilaritySearchStrategy(3),
-                    SystemPromptAugmenter(),
-                    agentcoreNamespace
-                )
-//                retrieval {
-//                    storage = AgentcoreRetrievalStorage(client = agentcoreClient, agentcoreMemoryId = agentcoreMemoryId,
-//                        agentcoreMemoryStrategyId = agentcoreMemoryStrategyId, actorId = agentcoreActorId)
-//                    searchStrategy = SimilaritySearchStrategy(3)
-//                    promptAugmenter = SystemPromptAugmenter()
-////                    namespace = agentcoreNamespace //fixme: enable in builders!
-//                }
+                retrieval {
+                    storage = AgentcoreSearchStorage(agentcoreClient, agentcoreMemoryId, agentcoreMemoryStrategyId)
+                    searchStrategy = AgentcoreSimilaritySearchStrategy(AgentcoreLongTermStrategyType.SEMANTIC)
+                    namespace = AgentcoreNamespaceStringBuilder(agentcoreMemoryStrategyId).withActorId("actorId").withSessionId("sessionId").build()
+                }
             }
         }
 
         return try {
-            agent.run(userPrompt, "$agentcoreActorId:mySessionId") //FIXME: set desired actorId and sessionId
+            agent.run(userPrompt, "$DEFAULT_ACTOR_ID:$DEFAULT_SESSION_ID") //FIXME: set desired actorId and sessionId
         } catch (e: Exception) {
             logger.error("Error trying to run agent: ${e.message}", e)
             throw e
@@ -122,17 +82,17 @@ object KoogAgentService {
         }
     }
 
-    private fun notSoSimpleBedrockExecutor(credentialsProvider: CredentialsProvider): SingleLLMPromptExecutor {
-        val bedrockSettings = BedrockClientSettings(
-            region = bedrockRegion.regionCode,
-            maxRetries = 3
-        )
-
-        return SingleLLMPromptExecutor(
-            BedrockLLMClient(
-                identityProvider = credentialsProvider,
-                settings = bedrockSettings,
-            )
-        )
-    }
+//    private fun notSoSimpleBedrockExecutor(credentialsProvider: CredentialsProvider): SingleLLMPromptExecutor {
+//        val bedrockSettings = BedrockClientSettings(
+//            region = bedrockRegion.regionCode,
+//            maxRetries = 3
+//        )
+//
+//        return SingleLLMPromptExecutor(
+//            BedrockLLMClient(
+//                identityProvider = credentialsProvider,
+//                settings = bedrockSettings,
+//            )
+//        )
+//    }
 }

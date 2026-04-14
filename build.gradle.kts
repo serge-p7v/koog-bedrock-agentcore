@@ -26,6 +26,7 @@ dependencies {
     implementation("io.ktor:ktor-server-core")
     implementation("io.ktor:ktor-server-sse")
     implementation("ai.koog:koog-ktor:$koog_version")
+    implementation("ai.koog:agents-features-chat-history-aws:$koog_version")
     implementation("io.ktor:ktor-server-content-negotiation")
     implementation("io.ktor:ktor-serialization-kotlinx-json")
     implementation("io.ktor:ktor-server-cio")
