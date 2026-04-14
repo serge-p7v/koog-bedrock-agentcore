@@ -15,7 +15,7 @@ public class AgentcoreSimilaritySearchStrategy(
 //            limit = limit,
 //            offset = offset,
 //        )
-        AgentcoreLongTermStrategyType.USER_PREFERENCE,
+        AgentcoreLongTermStrategyType.USER_PREFERENCE, //fixme: it won't work with SimilaritySearchRequest
         AgentcoreLongTermStrategyType.SEMANTIC,
         AgentcoreLongTermStrategyType.SUMMARY,
         AgentcoreLongTermStrategyType.EPISODIC -> SimilaritySearchRequest(

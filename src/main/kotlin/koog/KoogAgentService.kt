@@ -62,20 +62,21 @@ object KoogAgentService {
                 chatHistoryProvider = AgentcoreChatHistoryProvider(agentcoreClient, agentcoreMemoryId)
                 windowSize(20)
             }
-            install(LongTermMemory) {
+            install(LongTermMemory) { //fixme: must be used together with ChatMemory
                 retrieval {
                     storage = AgentcoreSearchStorage(agentcoreClient, agentcoreMemoryId, agentcoreMemoryStrategyId)
                     searchStrategy = AgentcoreSimilaritySearchStrategy(AgentcoreLongTermStrategyType.SEMANTIC)
-                    namespace = AgentcoreNamespaceStringBuilder(agentcoreMemoryStrategyId)
+                    namespace = AgentcoreNamespaceStringBuilder(agentcoreMemoryStrategyId) //fixme: warn users about absence of namespace validation
                         .withActorId(DEFAULT_ACTOR_ID)
                         .withSessionId(DEFAULT_SESSION_ID)
                         .build()
+//                    promptAugmenter = UserPromptAugmenter()// fixme: select proper prompt augmenter depending on the strategy
                 }
             }
         }
 
         return try {
-            agent.run(userPrompt, "$DEFAULT_ACTOR_ID:$DEFAULT_SESSION_ID") //FIXME: set desired actorId and sessionId
+            agent.run(userPrompt, "$DEFAULT_ACTOR_ID:$DEFAULT_SESSION_ID")
         } catch (e: Exception) {
             logger.error("Error trying to run agent: ${e.message}", e)
             throw e
