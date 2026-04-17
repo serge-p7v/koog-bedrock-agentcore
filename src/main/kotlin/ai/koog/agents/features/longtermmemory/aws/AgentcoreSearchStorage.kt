@@ -11,6 +11,7 @@ import aws.sdk.kotlin.services.bedrockagentcore.model.ListMemoryRecordsRequest
 import aws.sdk.kotlin.services.bedrockagentcore.model.MemoryRecordSummary
 import aws.sdk.kotlin.services.bedrockagentcore.model.RetrieveMemoryRecordsRequest
 import aws.sdk.kotlin.services.bedrockagentcore.model.SearchCriteria
+import org.slf4j.LoggerFactory
 
 /**
  * A [SearchStorage] implementation backed by AWS Bedrock AgentCore memory.
@@ -28,6 +29,8 @@ public class AgentcoreSearchStorage(
     public val agentcoreMemoryId: String,
     public val agentcoreMemoryStrategyId: String, // TODO: should be passed in AgentcoreSimilaritySearchRequest and AgentcoreListingSearchRequest
 ) : SearchStorage<TextDocument, SearchRequest> {
+
+    private val logger = LoggerFactory.getLogger("AgentcoreSearchStorage")
 
     override suspend fun search(
         request: SearchRequest,
@@ -70,7 +73,11 @@ public class AgentcoreSearchStorage(
             }
         }
 
-        return client.retrieveMemoryRecords(request).memoryRecordSummaries
+        logger.debug("Retrieving memory records for searchQuery $searchQuery and namespace $namespace")
+        val memoryRecordSummaries = client.retrieveMemoryRecords(request).memoryRecordSummaries
+        logger.debug("Retrieved ${memoryRecordSummaries.size} memory records")
+
+        return memoryRecordSummaries
     }
 
     private suspend fun listMemoryRecords(maxResults: Int?, namespace: String?): List<MemoryRecordSummary> {
@@ -81,6 +88,10 @@ public class AgentcoreSearchStorage(
             this.maxResults = maxResults
         }
 
-        return client.listMemoryRecords(request).memoryRecordSummaries
+        logger.debug("Listing memory records for namespace $namespace")
+        val memoryRecordSummaries = client.listMemoryRecords(request).memoryRecordSummaries
+        logger.debug("Listed ${memoryRecordSummaries.size} memory records")
+
+        return memoryRecordSummaries
     }
 }

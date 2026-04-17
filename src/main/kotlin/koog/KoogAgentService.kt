@@ -8,7 +8,7 @@ import ai.koog.agents.core.annotation.ExperimentalAgentsApi
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.chathistory.aws.AgentcoreChatHistoryProvider
 import ai.koog.agents.features.longtermmemory.aws.AgentcoreLongTermStrategyType
-import ai.koog.agents.features.longtermmemory.aws.AgentcoreNamespaceStringBuilder
+import ai.koog.agents.features.longtermmemory.aws.AgentcoreNamespace
 import ai.koog.agents.features.longtermmemory.aws.AgentcoreSearchStorage
 import ai.koog.agents.features.longtermmemory.aws.AgentcoreSimilaritySearchStrategy
 import ai.koog.agents.longtermmemory.feature.LongTermMemory
@@ -66,10 +66,7 @@ object KoogAgentService {
                 retrieval {
                     storage = AgentcoreSearchStorage(agentcoreClient, agentcoreMemoryId, agentcoreMemoryStrategyId)
                     searchStrategy = AgentcoreSimilaritySearchStrategy(AgentcoreLongTermStrategyType.SEMANTIC)
-                    namespace = AgentcoreNamespaceStringBuilder(agentcoreMemoryStrategyId) //fixme: warn users about absence of namespace validation
-                        .withActorId(DEFAULT_ACTOR_ID)
-                        .withSessionId(DEFAULT_SESSION_ID)
-                        .build()
+                    namespace = AgentcoreNamespace.actorScoped(agentcoreMemoryStrategyId, DEFAULT_ACTOR_ID) //fixme: warn users about absence of namespace validation
 //                    promptAugmenter = UserPromptAugmenter()// fixme: select proper prompt augmenter depending on the strategy
                 }
             }
