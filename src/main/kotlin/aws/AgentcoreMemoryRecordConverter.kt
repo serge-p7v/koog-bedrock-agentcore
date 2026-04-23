@@ -14,7 +14,7 @@ import aws.sdk.kotlin.services.bedrockagentcore.model.MetadataValue
  * Provides utilities to transform [MemoryRecordSummary] objects returned by the Bedrock AgentCore API
  * into [SearchResult] instances wrapping [TextDocument], including score and metadata mapping.
  */
-public object AgentcoreMemoryRecordConverter {
+internal object AgentcoreMemoryRecordConverter {
 
     internal fun memoryRecordSummaryToSearchResult(memoryRecordSummary: MemoryRecordSummary): SearchResult<TextDocument> {
         return SearchResult(
